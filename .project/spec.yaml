@@ -1,7 +1,7 @@
 specVersion: v2
 specMinorVersion: 2
 meta:
-  name: twelve-labs-jockey
+  name: moo-dang-fe
   image: project-brainwavecollective-jockey
   description: Brain Wave Collecive presents unreal agentic video interaction, powered
     by TwelveLabs Jockey and NVIDIA AI Workbench
