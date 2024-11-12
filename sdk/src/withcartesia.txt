@@ -1,0 +1,140 @@
+import React, { useEffect, useState } from 'react';
+import './App.css';
+import { Client } from "@langchain/langgraph-sdk";
+import Cartesia from "@cartesia/cartesia-js";
+
+interface CartesiaMessage {
+  data?: ArrayBuffer;
+}
+
+export const App: React.FC = () => {
+  const [assistants, setAssistants] = useState<any[]>([]);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [inputValue, setInputValue] = useState<string>('');
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+
+  const client = new Client({ apiUrl: "http://localhost:8123" });
+  const cartesia = new Cartesia({ apiKey: process.env.REACT_APP_CARTESIA_API_KEY });
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInputValue(e.target.value);
+  };
+
+  const generateOpenAINarration = async (content: string) => {
+    try {
+      const response = await fetch('http://localhost:5000/generate-narration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content })
+      });
+      const data = await response.json();
+      return data.narration || "No narration available.";
+    } catch (error) {
+      console.error("Error generating OpenAI narration:", error);
+      return "Error generating narration.";
+    }
+  };
+
+  const handleCartesiaTTS = async (text: string) => {
+    try {
+      const websocket = cartesia.tts.websocket({
+        container: "raw",
+        encoding: "pcm_f32le",
+        sampleRate: 44100
+      });
+      await websocket.connect();
+
+      const response = await websocket.send({
+        model_id: "sonic-english",
+        voice: { mode: "id", id: "a0e99841-438c-4a64-b679-ae501e7d6091" },
+        transcript: text
+      });
+
+      // Create an AudioContext for playback
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+      // Function to play PCM data
+      const playPCMData = async (dataBuffer: ArrayBuffer) => {
+        const audioBuffer = await audioContext.decodeAudioData(dataBuffer);
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+        source.start();
+      };
+
+      // Handle response messages with type checking
+      const chunks: ArrayBuffer[] = [];
+      response.on("message", (eventData: CartesiaMessage | string) => {
+        if (typeof eventData === "string") {
+          console.warn("Received a string instead of a CartesiaMessage", eventData);
+        } else if (eventData.data && eventData.data instanceof ArrayBuffer) {
+          chunks.push(eventData.data); // Collect audio data chunks
+        }
+      });
+
+      // Wait for completion and play all audio chunks
+      for await (const message of response.events("message") as AsyncIterable<CartesiaMessage>) {
+        if (message?.data && message.data instanceof ArrayBuffer) {
+          chunks.push(message.data);
+        }
+      }
+
+      // Concatenate and play collected audio data
+      if (chunks.length > 0) {
+        const audioBlob = new Blob(chunks, { type: "audio/pcm" });
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        await playPCMData(arrayBuffer);
+      }
+    } catch (error) {
+      console.error("Cartesia TTS error:", error);
+    }
+  };
+
+  const initializeChat = async () => {
+    if (!inputValue.trim() || isProcessing) return;
+    setIsProcessing(true);
+
+    try {
+      const narration = await generateOpenAINarration(inputValue);
+      setMessages(prev => [...prev, { sender: 'openai', text: narration }]);
+      await handleCartesiaTTS(narration);
+    } catch (error) {
+      console.error("Error in chat initialization:", error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <div className="App">
+      <header className="App-header">
+        <div className="input-container" style={{ marginBottom: '20px', width: '100%', maxWidth: '800px', padding: '0 20px', alignSelf: 'flex-start', display: 'flex', justifyContent: 'flex-start' }}>
+          <div style={{ display: 'flex', gap: '10px', maxWidth: '800px', width: '100%' }}>
+            <input
+              type="text"
+              value={inputValue}
+              onChange={handleInputChange}
+              placeholder="Enter your message..."
+              style={{ padding: '12px 16px', borderRadius: '4px', border: '1px solid #ccc', width: '100%', maxWidth: '500px', fontSize: '16px', color: '#000000', backgroundColor: '#ffffff' }}
+            />
+            <button
+              onClick={initializeChat}
+              disabled={isProcessing}
+              style={{ padding: '12px 24px', borderRadius: '4px', backgroundColor: isProcessing ? '#cccccc' : '#61dafb', border: 'none', color: 'white', cursor: isProcessing ? 'not-allowed' : 'pointer', fontSize: '16px', whiteSpace: 'nowrap', minWidth: 'fit-content' }}
+            >
+              {isProcessing ? 'Processing...' : 'Submit'}
+            </button>
+          </div>
+        </div>
+        {messages.map((message, index) => (
+          <div key={index} style={{ margin: '10px', padding: '20px', backgroundColor: 'rgba(97, 218, 251, 0.1)', borderRadius: '8px', width: '100%', maxWidth: '800px', alignSelf: 'flex-start', wordBreak: 'break-word', boxSizing: 'border-box' }}>
+            <div style={{ fontWeight: 'bold', marginBottom: '10px', textAlign: 'left', fontSize: '0.9em', color: '#61dafb' }}>{message.sender}</div>
+            <div style={{ textAlign: 'left', lineHeight: '1.5', fontSize: '0.9em', whiteSpace: 'pre-wrap' }}>{message.text}</div>
+          </div>
+        ))}
+      </header>
+    </div>
+  );
+};
+
+export default App;
